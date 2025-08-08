@@ -1,11 +1,12 @@
 import pickle
 import numpy as np
 import os
-from isu.features_qv_stats import calculate_f1_f10
-from isu.features_capacity import calculate_f11_f13
-from isu.features_time_temp import calculate_f14_f20
-from isu.features_segments import calculate_f21_f46
-from isu.features_charge_capacity import calculate_f47_f59
+from isu.features_f1_f10 import calculate_f1_f10_isu
+from isu.features_f11_f20 import calculate_f11_f20_isu
+from isu.features_f21_f30 import calculate_f21_f30_isu
+from isu.features_f31_f40 import calculate_f31_f40_isu
+from isu.features_f41_f50 import calculate_f41_f50_isu
+from isu.features_f51_f59 import calculate_f51_f59_isu
 
 def extract_all_isu_features(battery_data, filename):
     """提取ISU数据的所有59个特征"""
@@ -15,27 +16,29 @@ def extract_all_isu_features(battery_data, filename):
         return None, None
     
     # 计算各组特征
-    f1_f10 = calculate_f1_f10(cycle_data)
-    f11_f13 = calculate_f11_f13(cycle_data)
-    f14_f20 = calculate_f14_f20(cycle_data)
-    f21_f46 = calculate_f21_f46(cycle_data)
-    f47_f59 = calculate_f47_f59(cycle_data)
+    f1_f10 = calculate_f1_f10_isu(battery_data)
+    f11_f20 = calculate_f11_f20_isu(battery_data)
+    f21_f30 = calculate_f21_f30_isu(battery_data)
+    f31_f40 = calculate_f31_f40_isu(battery_data)
+    f41_f50 = calculate_f41_f50_isu(battery_data)
+    f51_f59 = calculate_f51_f59_isu(battery_data)
     
     # 验证特征数量
-    print(f"  特征数量检查: F1-F10({len(f1_f10)}), F11-F13({len(f11_f13)}), F14-F20({len(f14_f20)}), F21-F46({len(f21_f46)}), F47-F59({len(f47_f59)})")
+    print(f"  特征数量检查: F1-F10({len(f1_f10)}), F11-F20({len(f11_f20)}), F21-F30({len(f21_f30)}), F31-F40({len(f31_f40)}), F41-F50({len(f41_f50)}), F51-F59({len(f51_f59)})")
     
     # 合并所有特征
-    all_features = f1_f10 + f11_f13 + f14_f20 + f21_f46 + f47_f59
+    all_features = f1_f10 + f11_f20 + f21_f30 + f31_f40 + f41_f50 + f51_f59
     
     # 标签：循环寿命
     y = len(cycle_data)
     
     print(f"  总特征数: {len(all_features)}")
     print(f"  F1-F5: {[f'{x:.3f}' for x in f1_f10[:5]]}")
-    print(f"  F11-F13: {[f'{x:.3f}' for x in f11_f13]}")
-    print(f"  F14: {f14_f20[0]:.3f}")
-    print(f"  F21-F23: {[f'{x:.3f}' for x in f21_f46[:3]]}")
-    print(f"  F47-F49: {[f'{x:.3f}' for x in f47_f59[:3]]}")
+    print(f"  F11-F13: {[f'{x:.3f}' for x in f11_f20[:3]]}")
+    print(f"  F21-F23: {[f'{x:.3f}' for x in f21_f30[:3]]}")
+    print(f"  F31-F33: {[f'{x:.3f}' for x in f31_f40[:3]]}")
+    print(f"  F41-F43: {[f'{x:.3f}' for x in f41_f50[:3]]}")
+    print(f"  F51-F53: {[f'{x:.3f}' for x in f51_f59[:3]]}")
     
     return all_features, y
 
