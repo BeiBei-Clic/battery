@@ -95,9 +95,9 @@ def extract_matr_features(battery_data, filename):
             # 计算△Q(V)
             Diff_100_10 = Qdlin_100 - Qdlin_10
             
-            # F1: △Q(V)最小值的绝对值的对数
-            min_diff = np.min(Diff_100_10)
-            F1 = math.log(abs(min_diff), 10) if min_diff != 0 else -10
+            # F1: △Q(V)最小绝对值的对数 (修正)
+            min_abs_diff = np.min(np.abs(Diff_100_10))
+            F1 = math.log(abs(min_abs_diff), 10) if min_abs_diff != 0 else -10
             
             # F5: △Q(V)的峰度的对数
             mean = np.mean(Diff_100_10)
@@ -124,11 +124,12 @@ def extract_matr_features(battery_data, filename):
     else:
         F14 = np.mean(chargetime_list[1:min(6, len(chargetime_list))])
     
-    # F59: 从第1周期到最大容量周期的总充放电时间 - 与collect_3.py一致
+    # F59: 从第1周期到最大容量周期的总充电时间 (修正为与ISU一致)
     qdischarge = np.array(qd_list[1:min(100, len(qd_list))])
     qdischarge[qdischarge > 1.3] = 0
     max_cycle = np.argmax(qdischarge) + 2
     
+    F59 = sum(chargetime_list[:min(max_cycle, len(chargetime_list))])
     all_charge_time = 0
     all_discharge_time = 0
     
