@@ -9,10 +9,10 @@ def calculate_f41_f50_matr(battery_data):
     # 提取循环数据
     cycle_data = battery_data.get('cycle_data', [])
     
-    # 获取CCCV和CVCC段数据的辅助函数
-    def get_charge_segments(cycle_idx):
+    # 获取第100次循环的充电段数据
+    def get_charge_segments_with_current(cycle_idx):
         if cycle_idx >= len(cycle_data):
-            return None, None
+            return [], []
         
         cycle = cycle_data[cycle_idx]
         current = np.array(cycle.get('current_in_A', []))
@@ -26,125 +26,133 @@ def calculate_f41_f50_matr(battery_data):
                 charge_voltage = voltage[charge_mask]
                 charge_time = time_data[charge_mask]
                 
-                if len(charge_time) > 4:
-                    # 简化分段：前半段为CCCV-CCCT，后半段为CVCC-CVCT
-                    mid_point = len(charge_time) // 2
-                    
-                    cccv_ccct = {
-                        'time': charge_time[:mid_point],
-                        'voltage': charge_voltage[:mid_point],
-                        'current': charge_current[:mid_point]
-                    }
-                    
-                    cvcc_cvct = {
-                        'time': charge_time[mid_point:],
-                        'voltage': charge_voltage[mid_point:],
-                        'current': charge_current[mid_point:]
-                    }
-                    
-                    return cccv_ccct, cvcc_cvct
-        
-        return None, None
+                if len(charge_voltage) > 2:
+                    # 分为前半段(CCCV-CCCT)和后半段(CVCC-CVCT)
+                    half_point = len(charge_voltage) // 2
+                    segment1 = np.column_stack((charge_time[:half_point], charge_voltage[:half_point]))
+                    segment2 = np.column_stack((charge_time[half_point:], charge_voltage[half_point:]))
+                    return segment1, segment2
+        return np.array([]), np.array([])
     
-    # 获取第100次和第10次循环的充电段数据
-    cccv_100, cvcc_100 = get_charge_segments(99) if len(cycle_data) > 99 else (None, None)
-    cccv_10, cvcc_10 = get_charge_segments(9) if len(cycle_data) > 9 else (None, None)
+    # 计算峰度的辅助函数
+    def calculate_kurtosis(data):
+        if len(data) < 4:
+            return 0
+        return stats.kurtosis(data)
     
-    # F41: CCCV-CCCT段峰度差值 (Kurtosis coefficient of CCCV-CCCT segment of the curve eq 5)
-    def calculate_kurtosis(segment):
-        if segment is None or len(segment['voltage']) < 4:
+    # 计算弗雷歇距离（段内曲线复杂度）
+    def calculate_frechet_distance(segment):
+        if len(segment) < 2:
             return 0
         
-        voltage = segment['voltage']
-        return stats.kurtosis(voltage)
-    
-    kurtosis_cccv_100 = calculate_kurtosis(cccv_100)
-    kurtosis_cccv_10 = calculate_kurtosis(cccv_10)
-    f41 = kurtosis_cccv_100 - kurtosis_cccv_10
-    
-    # F42: CVCC-CVCT段峰度差值 (Kurtosis coefficient of CVCC-CVCT segment of the curve eq 5)
-    kurtosis_cvcc_100 = calculate_kurtosis(cvcc_100)
-    kurtosis_cvcc_10 = calculate_kurtosis(cvcc_10)
-    f42 = kurtosis_cvcc_100 - kurtosis_cvcc_10
-    
-    # F43: CCCV-CCCT段弗雷歇距离差值 (Frechet distance of CCCV-CCCT segment of the curve eq 6)
-    def calculate_frechet_distance(segment1, segment2):
-        if segment1 is None or segment2 is None:
+        # 计算曲线的弯曲程度作为距离度量
+        if len(segment) < 3:
             return 0
-        if len(segment1['voltage']) < 2 or len(segment2['voltage']) < 2:
-            return 0
+            
+        time_vals = segment[:, 0]
+        voltage_vals = segment[:, 1]
         
-        # 简化的弗雷歇距离计算：使用欧几里得距离
-        v1 = segment1['voltage']
-        v2 = segment2['voltage']
-        
-        # 调整长度一致
-        min_len = min(len(v1), len(v2))
-        v1 = v1[:min_len]
-        v2 = v2[:min_len]
-        
-        return np.sqrt(np.sum((v1 - v2) ** 2))
+        if len(time_vals) > 2:
+            # 计算一阶和二阶差分
+            dt = np.diff(time_vals)
+            dv = np.diff(voltage_vals)
+            
+            if len(dt) > 0 and np.all(dt > 0):
+                dv_dt = dv / dt
+                if len(dv_dt) > 1:
+                    d2v_dt2 = np.diff(dv_dt) / dt[:-1]
+                    return np.mean(np.abs(d2v_dt2))
+        return 0
     
-    frechet_cccv_100_10 = calculate_frechet_distance(cccv_100, cccv_10)
-    f43 = frechet_cccv_100_10
-    
-    # F44: CVCC-CVCT段弗雷歇距离差值 (Frechet distance of CVCC-CVCT segment of the curve eq 6)
-    frechet_cvcc_100_10 = calculate_frechet_distance(cvcc_100, cvcc_10)
-    f44 = frechet_cvcc_100_10
-    
-    # F45: CCCV-CCCT段豪斯多夫距离差值 (Hausdorff distance of CCCV-CCCT segment of the curve eq 7)
-    def calculate_hausdorff_distance(segment1, segment2):
-        if segment1 is None or segment2 is None:
-            return 0
-        if len(segment1['voltage']) < 2 or len(segment2['voltage']) < 2:
+    # 计算豪斯多夫距离（段内距离）
+    def calculate_hausdorff_distance_single_segment(segment):
+        if len(segment) < 2:
             return 0
         
-        v1 = segment1['voltage'].reshape(-1, 1)
-        v2 = segment2['voltage'].reshape(-1, 1)
+        # 计算段内点之间的最大距离
+        points = segment
+        if len(points) < 2:
+            return 0
+            
+        # 计算所有点对之间的距离
+        distances = []
+        for i in range(len(points)):
+            for j in range(i+1, len(points)):
+                dist = np.linalg.norm(points[i] - points[j])
+                distances.append(dist)
         
-        # 调整长度一致
-        min_len = min(len(v1), len(v2))
-        v1 = v1[:min_len]
-        v2 = v2[:min_len]
-        
-        return max(directed_hausdorff(v1, v2)[0], directed_hausdorff(v2, v1)[0])
+        return np.max(distances) if distances else 0
     
-    hausdorff_cccv_100_10 = calculate_hausdorff_distance(cccv_100, cccv_10)
-    f45 = hausdorff_cccv_100_10
+    # 获取第100次循环的充电段数据
+    segment1, segment2 = get_charge_segments_with_current(99)  # 第100次循环
     
-    # F46: CVCC-CVCT段豪斯多夫距离差值 (Hausdorff distance of CVCC-CVCT segment of the curve eq 7)
-    hausdorff_cvcc_100_10 = calculate_hausdorff_distance(cvcc_100, cvcc_10)
-    f46 = hausdorff_cvcc_100_10
+    # F41: CCCV-CCCT段的峰度系数 eq 5
+    f41 = calculate_kurtosis(segment1[:, 1]) if len(segment1) > 0 else 0
     
-    # F47: 放电后平均电压下降差值 (Average voltage falloff after discharge [V])
-    def calculate_voltage_falloff(cycle_idx):
+    # F42: CVCC-CVCT段的峰度系数 eq 5
+    f42 = calculate_kurtosis(segment2[:, 1]) if len(segment2) > 0 else 0
+    
+    # F43: CCCV-CCCT段的弗雷歇距离 eq 7
+    f43 = calculate_frechet_distance(segment1) if len(segment1) > 0 else 0
+    
+    # F44: CVCC-CVCT段的弗雷歇距离 eq 7
+    f44 = calculate_frechet_distance(segment2) if len(segment2) > 0 else 0
+    
+    # F45: CCCV-CCCT段的豪斯多夫距离 eq 6
+    f45 = calculate_hausdorff_distance_single_segment(segment1) if len(segment1) > 0 else 0
+    
+    # F46: CVCC-CVCT段的豪斯多夫距离 eq 6
+    f46 = calculate_hausdorff_distance_single_segment(segment2) if len(segment2) > 0 else 0
+    
+    # F47: MVF——mean voltage falloff，5min after discharge
+    def get_voltage_falloff(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
         
         cycle = cycle_data[cycle_idx]
         current = np.array(cycle.get('current_in_A', []))
         voltage = np.array(cycle.get('voltage_in_V', []))
+        time_data = np.array(cycle.get('time_in_s', []))
         
-        if len(current) > 0 and len(voltage) > 0:
+        if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
             # 找到放电结束点
-            discharge_mask = current < 0
+            discharge_mask = current < -0.01
             if np.any(discharge_mask):
                 discharge_indices = np.where(discharge_mask)[0]
-                if len(discharge_indices) > 1:
-                    discharge_end_idx = discharge_indices[-1]
-                    if discharge_end_idx < len(voltage) - 10:
-                        # 计算放电结束后的电压下降
-                        voltage_at_end = voltage[discharge_end_idx]
-                        voltage_after = voltage[discharge_end_idx:discharge_end_idx+10]
-                        return voltage_at_end - np.mean(voltage_after)
+                if len(discharge_indices) > 0:
+                    discharge_end = discharge_indices[-1]
+                    
+                    # 寻找放电后5分钟的休息期
+                    after_discharge = discharge_end + 1
+                    if after_discharge < len(current):
+                        rest_current = current[after_discharge:]
+                        rest_voltage = voltage[after_discharge:]
+                        rest_time = time_data[after_discharge:]
+                        
+                        # 找到电流接近0的连续区间
+                        low_current_mask = np.abs(rest_current) < 0.005
+                        if np.sum(low_current_mask) > 10:
+                            rest_voltage_filtered = rest_voltage[low_current_mask]
+                            rest_time_filtered = rest_time[low_current_mask]
+                            
+                            if len(rest_voltage_filtered) > 5:
+                                # 计算5分钟内的电压下降
+                                time_span = (rest_time_filtered[-1] - rest_time_filtered[0])
+                                if time_span >= 300:  # 至少5分钟（秒）
+                                    # 取前5分钟的数据
+                                    five_min_mask = (rest_time_filtered - rest_time_filtered[0]) <= 300
+                                    voltage_5min = rest_voltage_filtered[five_min_mask]
+                                    
+                                    if len(voltage_5min) > 1:
+                                        voltage_start = voltage_5min[0]
+                                        voltage_end = voltage_5min[-1]
+                                        return voltage_start - voltage_end  # 电压下降量
         return 0
     
-    falloff_100 = calculate_voltage_falloff(99) if len(cycle_data) > 99 else 0
-    falloff_10 = calculate_voltage_falloff(9) if len(cycle_data) > 9 else 0
-    f47 = falloff_100 - falloff_10
+    f47 = get_voltage_falloff(99)  # 第100次循环的MVF
     
-    # F48: CC阶段电压变化时间间隔差值 (Time interval for equal charge voltage difference during CC phase [s])
-    def calculate_cc_voltage_time_interval(cycle_idx):
+    # F48: CC阶段4.0-4.2V的等电压差时间间隔
+    def get_cc_voltage_time_interval(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
         
@@ -156,82 +164,114 @@ def calculate_f41_f50_matr(battery_data):
         if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
+                charge_current = current[charge_mask]
                 charge_voltage = voltage[charge_mask]
                 charge_time = time_data[charge_mask]
                 
-                if len(charge_voltage) > 10:
-                    # 计算电压变化的时间间隔
-                    voltage_diff = np.diff(charge_voltage)
-                    time_diff = np.diff(charge_time)
-                    
-                    # 找到电压变化相等的时间间隔
-                    target_voltage_diff = 0.1  # 0.1V的电压变化
-                    indices = np.where(np.abs(voltage_diff - target_voltage_diff) < 0.05)[0]
-                    
-                    if len(indices) > 0:
-                        return np.mean(time_diff[indices])
-        return 0
-    
-    interval_100 = calculate_cc_voltage_time_interval(99) if len(cycle_data) > 99 else 0
-    interval_10 = calculate_cc_voltage_time_interval(9) if len(cycle_data) > 9 else 0
-    f48 = interval_100 - interval_10
-    
-    # F49: CC阶段充电容量差值 (Charge capacity during CC phase [Ah])
-    def calculate_cc_charge_capacity(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_current = current[charge_mask]
-                charge_time = time_data[charge_mask]
-                
-                if len(charge_current) > 1:
-                    # 计算CC阶段的充电容量
-                    dt = np.diff(charge_time) / 3600  # 转换为小时
-                    capacity = np.sum(charge_current[:-1] * dt)
-                    return capacity
-        return 0
-    
-    capacity_100 = calculate_cc_charge_capacity(99) if len(cycle_data) > 99 else 0
-    capacity_10 = calculate_cc_charge_capacity(9) if len(cycle_data) > 9 else 0
-    f49 = capacity_100 - capacity_10
-    
-    # F50: CV阶段电流变化时间间隔差值 (Time interval for equal charge current difference during CV phase [s])
-    def calculate_cv_current_time_interval(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_current = current[charge_mask]
-                charge_time = time_data[charge_mask]
-                
+                # 识别CC段（电流相对稳定）
                 if len(charge_current) > 10:
-                    # 计算电流变化的时间间隔
-                    current_diff = np.diff(charge_current)
-                    time_diff = np.diff(charge_time)
+                    current_std = np.std(charge_current)
+                    current_mean = np.mean(charge_current)
                     
-                    # 找到电流变化相等的时间间隔
-                    target_current_diff = 0.1  # 0.1A的电流变化
-                    indices = np.where(np.abs(current_diff - target_current_diff) < 0.05)[0]
-                    
-                    if len(indices) > 0:
-                        return np.mean(time_diff[indices])
+                    # CC段：电流变化小
+                    cc_mask = np.abs(charge_current - current_mean) < current_std * 0.2
+                    if np.sum(cc_mask) > 5:
+                        cc_voltage = charge_voltage[cc_mask]
+                        cc_time = charge_time[cc_mask]
+                        
+                        # 查找4.0V和4.2V对应的时间点
+                        if len(cc_voltage) > 1:
+                            v_40_idx = np.where(cc_voltage >= 4.0)[0]
+                            v_42_idx = np.where(cc_voltage >= 4.2)[0]
+                            
+                            if len(v_40_idx) > 0 and len(v_42_idx) > 0:
+                                time_40 = cc_time[v_40_idx[0]]
+                                time_42 = cc_time[v_42_idx[0]]
+                                return time_42 - time_40
         return 0
     
-    cv_interval_100 = calculate_cv_current_time_interval(99) if len(cycle_data) > 99 else 0
-    cv_interval_10 = calculate_cv_current_time_interval(9) if len(cycle_data) > 9 else 0
-    f50 = cv_interval_100 - cv_interval_10
+    f48 = get_cc_voltage_time_interval(99)  # 第100次循环
+    
+    # F49: CC阶段4.0-4.2V的充电容量
+    def get_cc_capacity(cycle_idx):
+        if cycle_idx >= len(cycle_data):
+            return 0
+        
+        cycle = cycle_data[cycle_idx]
+        current = np.array(cycle.get('current_in_A', []))
+        voltage = np.array(cycle.get('voltage_in_V', []))
+        time_data = np.array(cycle.get('time_in_s', []))
+        
+        if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_current = current[charge_mask]
+                charge_voltage = voltage[charge_mask]
+                charge_time = time_data[charge_mask]
+                
+                # 识别CC段
+                if len(charge_current) > 10:
+                    current_std = np.std(charge_current)
+                    current_mean = np.mean(charge_current)
+                    
+                    cc_mask = np.abs(charge_current - current_mean) < current_std * 0.2
+                    if np.sum(cc_mask) > 5:
+                        cc_voltage = charge_voltage[cc_mask]
+                        cc_current = charge_current[cc_mask]
+                        cc_time = charge_time[cc_mask]
+                        
+                        # 查找4.0V-4.2V范围内的容量
+                        voltage_mask = (cc_voltage >= 4.0) & (cc_voltage <= 4.2)
+                        if np.sum(voltage_mask) > 0:
+                            current_in_range = cc_current[voltage_mask]
+                            time_in_range = cc_time[voltage_mask]
+                            
+                            if len(current_in_range) > 1:
+                                dt = np.diff(time_in_range) / 3600  # 转换为小时
+                                capacity = np.sum(current_in_range[:-1] * dt)
+                                return capacity
+        return 0
+    
+    f49 = get_cc_capacity(99)  # 第100次循环
+    
+    # F50: CV阶段4A-0.1A的等电流差时间间隔
+    def get_cv_current_time_interval(cycle_idx):
+        if cycle_idx >= len(cycle_data):
+            return 0
+        
+        cycle = cycle_data[cycle_idx]
+        current = np.array(cycle.get('current_in_A', []))
+        time_data = np.array(cycle.get('time_in_s', []))
+        
+        if len(current) > 0 and len(time_data) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_current = current[charge_mask]
+                charge_time = time_data[charge_mask]
+                
+                # 识别CV段（电流递减）
+                if len(charge_current) > 10:
+                    # CV段通常在充电后期，电流逐渐下降
+                    current_diff = np.diff(charge_current)
+                    decreasing_mask = current_diff < 0
+                    
+                    if np.sum(decreasing_mask) > 5:
+                        # 找到连续下降的区间
+                        cv_start = np.where(decreasing_mask)[0][0]
+                        cv_current = charge_current[cv_start:]
+                        cv_time = charge_time[cv_start:]
+                        
+                        # 查找4A和0.1A对应的时间点
+                        if len(cv_current) > 1:
+                            i_4a_idx = np.where(cv_current <= 4.0)[0]
+                            i_01a_idx = np.where(cv_current <= 0.1)[0]
+                            
+                            if len(i_4a_idx) > 0 and len(i_01a_idx) > 0:
+                                time_4a = cv_time[i_4a_idx[0]]
+                                time_01a = cv_time[i_01a_idx[0]]
+                                return time_01a - time_4a
+        return 0
+    
+    f50 = get_cv_current_time_interval(99)  # 第100次循环
     
     return [f41, f42, f43, f44, f45, f46, f47, f48, f49, f50]

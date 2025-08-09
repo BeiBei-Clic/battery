@@ -76,7 +76,7 @@ def calculate_f21_f30_matr(battery_data):
     time_10 = get_cycle_time(9) if len(cycle_data) > 9 else 0
     f23 = time_100 - time_10
     
-    # F24: 充电开始时的端电压 (Terminal Voltage @ Start of charge [V])
+    # F24: 第100次循环的充电开始端电压 (Terminal Voltage @ Start of charge [V])
     def get_charge_start_voltage(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -93,13 +93,9 @@ def calculate_f21_f30_matr(battery_data):
                     return voltage[charge_indices[0]]
         return 0
     
-    # 取第100次和第10次循环充电开始电压的差值
-    start_v_100 = get_charge_start_voltage(99) if len(cycle_data) > 99 else 0
-    start_v_10 = get_charge_start_voltage(9) if len(cycle_data) > 9 else 0
-    f24 = start_v_100 - start_v_10
+    f24 = get_charge_start_voltage(99) if len(cycle_data) > 99 else 0
     
-    # F25: CC段充电时间差值 (Charge time of CC segment of charge curve [s])
-    # F26: CV段充电时间差值 (Charge time of CV segment of charge curve [s])
+    # F25-F26: 第100次循环的CC/CV段充电时间 (Charge time of CC/CV segment [s])
     def get_cc_cv_times(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0, 0
@@ -138,11 +134,10 @@ def calculate_f21_f30_matr(battery_data):
         return 0, 0
     
     cc_time_100, cv_time_100 = get_cc_cv_times(99) if len(cycle_data) > 99 else (0, 0)
-    cc_time_10, cv_time_10 = get_cc_cv_times(9) if len(cycle_data) > 9 else (0, 0)
-    f25 = cc_time_100 - cc_time_10  # CC时间差值
-    f26 = cv_time_100 - cv_time_10  # CV时间差值
+    f25 = cc_time_100  # CC段充电时间
+    f26 = cv_time_100  # CV段充电时间
     
-    # F27: CC段平均电流差值 (Mean current during CC segment of the curve [A])
+    # F27: 第100次循环的CC段平均电流 (Mean current during CC segment [A])
     def get_cc_mean_current(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -159,11 +154,9 @@ def calculate_f21_f30_matr(battery_data):
                     return np.mean(charge_current)
         return 0
     
-    cc_current_100 = get_cc_mean_current(99) if len(cycle_data) > 99 else 0
-    cc_current_10 = get_cc_mean_current(9) if len(cycle_data) > 9 else 0
-    f27 = cc_current_100 - cc_current_10
+    f27 = get_cc_mean_current(99) if len(cycle_data) > 99 else 0
     
-    # F28: CV段平均电压差值 (Mean voltage during CV segment of the curve [V])
+    # F28: 第100次循环的CV段平均电压 (Mean voltage during CV segment [V])
     def get_cv_mean_voltage(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -181,11 +174,9 @@ def calculate_f21_f30_matr(battery_data):
                     return np.mean(charge_voltage)
         return 0
     
-    cv_voltage_100 = get_cv_mean_voltage(99) if len(cycle_data) > 99 else 0
-    cv_voltage_10 = get_cv_mean_voltage(9) if len(cycle_data) > 9 else 0
-    f28 = cv_voltage_100 - cv_voltage_10
+    f28 = get_cv_mean_voltage(99) if len(cycle_data) > 99 else 0
     
-    # F29: CCCV段斜率差值 (Slope of CCCV-CCCT segment of the curve)
+    # F29: 第100次循环的CCCV段斜率 (Slope of CCCV-CCCT segment)
     def get_cccv_slope(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -207,11 +198,9 @@ def calculate_f21_f30_matr(battery_data):
                     return slope
         return 0
     
-    slope_100 = get_cccv_slope(99) if len(cycle_data) > 99 else 0
-    slope_10 = get_cccv_slope(9) if len(cycle_data) > 9 else 0
-    f29 = slope_100 - slope_10
+    f29 = get_cccv_slope(99) if len(cycle_data) > 99 else 0
     
-    # F30: CVCC段斜率差值 (Slope of CVCC-CVCT segment of the curve)
+    # F30: 第100次循环的CVCC段斜率 (Slope of CVCC-CVCT segment)
     def get_cvcc_slope(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -232,8 +221,6 @@ def calculate_f21_f30_matr(battery_data):
                     return slope
         return 0
     
-    cvcc_slope_100 = get_cvcc_slope(99) if len(cycle_data) > 99 else 0
-    cvcc_slope_10 = get_cvcc_slope(9) if len(cycle_data) > 9 else 0
-    f30 = cvcc_slope_100 - cvcc_slope_10
+    f30 = get_cvcc_slope(99) if len(cycle_data) > 99 else 0
     
     return [f21, f22, f23, f24, f25, f26, f27, f28, f29, f30]

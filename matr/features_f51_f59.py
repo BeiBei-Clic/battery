@@ -8,261 +8,301 @@ def calculate_f51_f59_matr(battery_data):
     # 提取循环数据
     cycle_data = battery_data.get('cycle_data', [])
     
-    # F51: CV阶段充电容量差值 (Charge capacity during CV phase [Ah])
-    def calculate_cv_charge_capacity(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
+    # 获取第100次循环数据
+    if len(cycle_data) > 99:
+        cycle_100 = cycle_data[99]
+    else:
+        # 如果没有第100次循环，使用最后一次循环
+        cycle_100 = cycle_data[-1] if cycle_data else {}
+    
+    # F51: CV阶段4A-0.1A的充电容量
+    def get_cv_capacity_4a_01a():
+        current = np.array(cycle_100.get('current_in_A', []))
+        charge_cap = np.array(cycle_100.get('charge_capacity_in_Ah', []))
         
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        voltage = np.array(cycle.get('voltage_in_V', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
+        if len(current) > 0 and len(charge_cap) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
                 charge_current = current[charge_mask]
-                charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask]
+                charge_capacity = charge_cap[charge_mask]
                 
+                # 识别CV段（电流递减）
                 if len(charge_current) > 10:
-                    # 简化的CV段识别：电压相对稳定的部分
-                    voltage_std = np.std(charge_voltage)
-                    if voltage_std < 0.05:  # CV段
-                        dt = np.diff(charge_time) / 3600  # 转换为小时
-                        capacity = np.sum(charge_current[:-1] * dt)
-                        return capacity
-                    else:
-                        # 取后半段作为CV段
-                        mid_point = len(charge_current) // 2
-                        cv_current = charge_current[mid_point:]
-                        cv_time = charge_time[mid_point:]
+                    current_diff = np.diff(charge_current)
+                    decreasing_mask = current_diff < 0
+                    
+                    if np.sum(decreasing_mask) > 5:
+                        cv_start = np.where(decreasing_mask)[0][0]
+                        cv_current = charge_current[cv_start:]
+                        cv_capacity = charge_capacity[cv_start:]
+                        
+                        # 查找4A-0.1A范围内的容量
                         if len(cv_current) > 1:
-                            dt = np.diff(cv_time) / 3600
-                            capacity = np.sum(cv_current[:-1] * dt)
-                            return capacity
+                            range_mask = (cv_current <= 4.0) & (cv_current >= 0.1)
+                            if np.sum(range_mask) > 0:
+                                capacity_in_range = cv_capacity[range_mask]
+                                if len(capacity_in_range) > 0:
+                                    return np.max(capacity_in_range) - np.min(capacity_in_range)
         return 0
     
-    cv_capacity_100 = calculate_cv_charge_capacity(99) if len(cycle_data) > 99 else 0
-    cv_capacity_10 = calculate_cv_charge_capacity(9) if len(cycle_data) > 9 else 0
-    f51 = cv_capacity_100 - cv_capacity_10
+    f51 = get_cv_capacity_4a_01a()
     
-    # F52: CC阶段温度变化率差值 (Temperature change rate during CC phase [°C/s])
-    def calculate_cc_temp_change_rate(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
+    # F52: CC阶段4.0-4.2V的温度变化率
+    def get_cc_temp_change_rate_4v():
+        current = np.array(cycle_100.get('current_in_A', []))
+        voltage = np.array(cycle_100.get('voltage_in_V', []))
+        time_data = np.array(cycle_100.get('time_in_s', []))
         
         # 检查多种可能的温度字段名
         temp_fields = ['temperature_in_C', 'temp_in_C', 'T_in_C', 'temperature', 'temp']
         temp_data = None
         
         for temp_field in temp_fields:
-            if temp_field in cycle:
-                temp_data = np.array(cycle[temp_field])
+            if temp_field in cycle_100:
+                temp_data = np.array(cycle_100[temp_field])
                 if len(temp_data) > 0 and not np.all(np.isnan(temp_data)):
                     break
         
-        if temp_data is not None and len(current) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_temp = temp_data[charge_mask]
-                charge_time = time_data[charge_mask]
-                
-                if len(charge_temp) > 10:
-                    # CC段：前半段
-                    mid_point = len(charge_temp) // 2
-                    cc_temp = charge_temp[:mid_point]
-                    cc_time = charge_time[:mid_point]
-                    
-                    if len(cc_temp) > 2:
-                        temp_change = np.diff(cc_temp)
-                        time_change = np.diff(cc_time)
-                        temp_change_rate = temp_change / time_change
-                        return np.mean(temp_change_rate)
-        return 0
-    
-    cc_temp_rate_100 = calculate_cc_temp_change_rate(99) if len(cycle_data) > 99 else 0
-    cc_temp_rate_10 = calculate_cc_temp_change_rate(9) if len(cycle_data) > 9 else 0
-    f52 = cc_temp_rate_100 - cc_temp_rate_10
-    
-    # F53: CV阶段温度变化率差值 (Temperature change rate during CV phase [°C/s])
-    def calculate_cv_temp_change_rate(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        # 检查多种可能的温度字段名
-        temp_fields = ['temperature_in_C', 'temp_in_C', 'T_in_C', 'temperature', 'temp']
-        temp_data = None
-        
-        for temp_field in temp_fields:
-            if temp_field in cycle:
-                temp_data = np.array(cycle[temp_field])
-                if len(temp_data) > 0 and not np.all(np.isnan(temp_data)):
-                    break
-        
-        if temp_data is not None and len(current) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_temp = temp_data[charge_mask]
-                charge_time = time_data[charge_mask]
-                
-                if len(charge_temp) > 10:
-                    # CV段：后半段
-                    mid_point = len(charge_temp) // 2
-                    cv_temp = charge_temp[mid_point:]
-                    cv_time = charge_time[mid_point:]
-                    
-                    if len(cv_temp) > 2:
-                        temp_change = np.diff(cv_temp)
-                        time_change = np.diff(cv_time)
-                        temp_change_rate = temp_change / time_change
-                        return np.mean(temp_change_rate)
-        return 0
-    
-    cv_temp_rate_100 = calculate_cv_temp_change_rate(99) if len(cycle_data) > 99 else 0
-    cv_temp_rate_10 = calculate_cv_temp_change_rate(9) if len(cycle_data) > 9 else 0
-    f53 = cv_temp_rate_100 - cv_temp_rate_10
-    
-    # F54: CC充电容量差值 (CC charge capacity [Ah])
-    def calculate_cc_charge_capacity(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(time_data) > 0:
+        if temp_data is not None and len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
                 charge_current = current[charge_mask]
+                charge_voltage = voltage[charge_mask]
+                charge_temp = temp_data[charge_mask]
                 charge_time = time_data[charge_mask]
                 
+                # 识别CC段并限定4.0-4.2V范围
                 if len(charge_current) > 10:
-                    # CC段：前半段
-                    mid_point = len(charge_current) // 2
-                    cc_current = charge_current[:mid_point]
-                    cc_time = charge_time[:mid_point]
+                    current_std = np.std(charge_current)
+                    current_mean = np.mean(charge_current)
+                    cc_mask = np.abs(charge_current - current_mean) < current_std * 0.2
                     
-                    if len(cc_current) > 1:
-                        dt = np.diff(cc_time) / 3600  # 转换为小时
-                        capacity = np.sum(cc_current[:-1] * dt)
-                        return capacity
+                    if np.sum(cc_mask) > 5:
+                        cc_voltage = charge_voltage[cc_mask]
+                        cc_temp = charge_temp[cc_mask]
+                        cc_time = charge_time[cc_mask]
+                        
+                        # 限定4.0-4.2V范围
+                        voltage_mask = (cc_voltage >= 4.0) & (cc_voltage <= 4.2)
+                        if np.sum(voltage_mask) > 2:
+                            range_temp = cc_temp[voltage_mask]
+                            range_time = cc_time[voltage_mask]
+                            
+                            if len(range_temp) > 1:
+                                temp_change = np.diff(range_temp)
+                                time_change = np.diff(range_time)
+                                temp_change_rate = temp_change / time_change
+                                return np.mean(temp_change_rate)
         return 0
     
-    cc_capacity_100 = calculate_cc_charge_capacity(99) if len(cycle_data) > 99 else 0
-    cc_capacity_10 = calculate_cc_charge_capacity(9) if len(cycle_data) > 9 else 0
-    f54 = cc_capacity_100 - cc_capacity_10
+    f52 = get_cc_temp_change_rate_4v()
     
-    # F55: CV充电容量差值 (CV charge capacity [Ah])
-    f55 = f51  # 与F51相同
-    
-    # F56: CC充电模式结束时曲线斜率差值 (Slope at the end of CC charge mode [V/s])
-    def calculate_cc_end_slope(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
+    # F53: CV阶段4A-0.1A的温度变化率
+    def get_cv_temp_change_rate_4a():
+        current = np.array(cycle_100.get('current_in_A', []))
+        time_data = np.array(cycle_100.get('time_in_s', []))
         
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        voltage = np.array(cycle.get('voltage_in_V', []))
-        time_data = np.array(cycle.get('time_in_s', []))
+        # 检查多种可能的温度字段名
+        temp_fields = ['temperature_in_C', 'temp_in_C', 'T_in_C', 'temperature', 'temp']
+        temp_data = None
+        
+        for temp_field in temp_fields:
+            if temp_field in cycle_100:
+                temp_data = np.array(cycle_100[temp_field])
+                if len(temp_data) > 0 and not np.all(np.isnan(temp_data)):
+                    break
+        
+        if temp_data is not None and len(current) > 0 and len(time_data) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_current = current[charge_mask]
+                charge_temp = temp_data[charge_mask]
+                charge_time = time_data[charge_mask]
+                
+                # 识别CV段并限定4A-0.1A范围
+                if len(charge_current) > 10:
+                    current_diff = np.diff(charge_current)
+                    decreasing_mask = current_diff < 0
+                    
+                    if np.sum(decreasing_mask) > 5:
+                        cv_start = np.where(decreasing_mask)[0][0]
+                        cv_current = charge_current[cv_start:]
+                        cv_temp = charge_temp[cv_start:]
+                        cv_time = charge_time[cv_start:]
+                        
+                        # 限定4A-0.1A范围
+                        current_mask = (cv_current <= 4.0) & (cv_current >= 0.1)
+                        if np.sum(current_mask) > 2:
+                            range_temp = cv_temp[current_mask]
+                            range_time = cv_time[current_mask]
+                            
+                            if len(range_temp) > 1:
+                                temp_change = np.diff(range_temp)
+                                time_change = np.diff(range_time)
+                                temp_change_rate = temp_change / time_change
+                                return np.mean(temp_change_rate)
+        return 0
+    
+    f53 = get_cv_temp_change_rate_4a()
+    
+    # F54: CC充电容量（全CC段）
+    def get_cc_capacity_all():
+        current = np.array(cycle_100.get('current_in_A', []))
+        charge_cap = np.array(cycle_100.get('charge_capacity_in_Ah', []))
+        
+        if len(current) > 0 and len(charge_cap) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_current = current[charge_mask]
+                charge_capacity = charge_cap[charge_mask]
+                
+                # 识别CC段（电流相对稳定）
+                if len(charge_current) > 10:
+                    current_std = np.std(charge_current)
+                    current_mean = np.mean(charge_current)
+                    
+                    # CC段：电流变化小
+                    cc_mask = np.abs(charge_current - current_mean) < current_std * 0.2
+                    if np.sum(cc_mask) > 5:
+                        cc_capacity = charge_capacity[cc_mask]
+                        if len(cc_capacity) > 0:
+                            return np.max(cc_capacity) - np.min(cc_capacity)
+        return 0
+    
+    f54 = get_cc_capacity_all()
+    
+    # F55: CV充电容量（全CV段）
+    def get_cv_capacity_all():
+        current = np.array(cycle_100.get('current_in_A', []))
+        charge_cap = np.array(cycle_100.get('charge_capacity_in_Ah', []))
+        
+        if len(current) > 0 and len(charge_cap) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_current = current[charge_mask]
+                charge_capacity = charge_cap[charge_mask]
+                
+                # 识别CV段（电流递减）
+                if len(charge_current) > 10:
+                    current_diff = np.diff(charge_current)
+                    decreasing_mask = current_diff < 0
+                    
+                    if np.sum(decreasing_mask) > 5:
+                        cv_start = np.where(decreasing_mask)[0][0]
+                        cv_capacity = charge_capacity[cv_start:]
+                        
+                        if len(cv_capacity) > 0:
+                            return np.max(cv_capacity) - np.min(cv_capacity)
+        return 0
+    
+    f55 = get_cv_capacity_all()
+    
+    # F56: CC充电模式结束时曲线的斜率
+    def get_cc_end_slope():
+        current = np.array(cycle_100.get('current_in_A', []))
+        voltage = np.array(cycle_100.get('voltage_in_V', []))
+        time_data = np.array(cycle_100.get('time_in_s', []))
         
         if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
+                charge_current = current[charge_mask]
                 charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask]
+                charge_time = time_data[charge_mask] / 1e9  # 转换为秒
                 
-                if len(charge_voltage) > 10:
-                    # CC段结束时的斜率：取前半段的最后几个点
-                    mid_point = len(charge_voltage) // 2
-                    end_voltage = charge_voltage[mid_point-5:mid_point]
-                    end_time = charge_time[mid_point-5:mid_point]
+                # 识别CC段
+                if len(charge_current) > 10:
+                    current_std = np.std(charge_current)
+                    current_mean = np.mean(charge_current)
                     
-                    if len(end_voltage) > 2:
-                        slope, _ = np.polyfit(end_time, end_voltage, 1)
-                        return slope
+                    cc_mask = np.abs(charge_current - current_mean) < current_std * 0.2
+                    if np.sum(cc_mask) > 5:
+                        cc_voltage = charge_voltage[cc_mask]
+                        cc_time = charge_time[cc_mask]
+                        
+                        if len(cc_voltage) >= 3:
+                            # 计算CC段结束时的斜率（取最后几个点）
+                            end_points = min(5, len(cc_voltage))
+                            end_voltage = cc_voltage[-end_points:]
+                            end_time = cc_time[-end_points:]
+                            
+                            if len(end_voltage) >= 2:
+                                slope = np.polyfit(end_time, end_voltage, 1)[0]
+                                return slope
         return 0
     
-    cc_slope_100 = calculate_cc_end_slope(99) if len(cycle_data) > 99 else 0
-    cc_slope_10 = calculate_cc_end_slope(9) if len(cycle_data) > 9 else 0
-    f56 = cc_slope_100 - cc_slope_10
+    f56 = get_cc_end_slope()
     
-    # F57: CC充电曲线拐角处垂直斜率差值 (Vertical slope at the corner of CC charge curve [A/s])
-    def calculate_cc_corner_slope(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
+    # F57: CC充电曲线拐角处的垂直斜率
+    def get_cc_corner_slope():
+        current = np.array(cycle_100.get('current_in_A', []))
+        voltage = np.array(cycle_100.get('voltage_in_V', []))
         
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(time_data) > 0:
+        if len(current) > 0 and len(voltage) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
                 charge_current = current[charge_mask]
-                charge_time = time_data[charge_mask]
+                charge_voltage = voltage[charge_mask]
                 
+                # 找到CC到CV的转换点（拐角）
                 if len(charge_current) > 10:
-                    # 拐角处：CC到CV的转换点，大约在中间位置
-                    mid_point = len(charge_current) // 2
-                    corner_current = charge_current[mid_point-3:mid_point+3]
-                    corner_time = charge_time[mid_point-3:mid_point+3]
+                    current_diff = np.abs(np.diff(charge_current))
+                    current_std = np.std(charge_current)
+                    cv_start_candidates = np.where(current_diff > current_std * 0.1)[0]
                     
-                    if len(corner_current) > 2:
-                        slope, _ = np.polyfit(corner_time, corner_current, 1)
-                        return slope
+                    if len(cv_start_candidates) > 0:
+                        cv_start = cv_start_candidates[0]
+                        
+                        if cv_start > 5 and cv_start < len(charge_voltage) - 5:
+                            # 计算拐角前后的斜率
+                            before_corner = charge_voltage[cv_start-5:cv_start]
+                            after_corner = charge_voltage[cv_start:cv_start+5]
+                            
+                            if len(before_corner) > 1 and len(after_corner) > 1:
+                                slope_before = np.polyfit(range(len(before_corner)), before_corner, 1)[0]
+                                slope_after = np.polyfit(range(len(after_corner)), after_corner, 1)[0]
+                                corner_slope = abs(slope_after - slope_before)
+                                return corner_slope
         return 0
     
-    corner_slope_100 = calculate_cc_corner_slope(99) if len(cycle_data) > 99 else 0
-    corner_slope_10 = calculate_cc_corner_slope(9) if len(cycle_data) > 9 else 0
-    f57 = corner_slope_100 - corner_slope_10
+    f57 = get_cc_corner_slope()
     
-    # F58: 最大容量对应的循环次数 (Cycle number corresponding to maximum capacity)
-    def get_max_capacity_cycle():
-        max_capacity = 0
-        max_cycle = 1
+    # F58: 最大容量对应的循环次数 (保持原有实现，与文档一致)
+    discharge_capacities = []
+    for cycle in cycle_data:
+        current = np.array(cycle.get('current_in_A', []))
+        discharge_cap = np.array(cycle.get('discharge_capacity_in_Ah', []))
         
-        for i in range(min(100, len(cycle_data))):
-            cycle = cycle_data[i]
-            cap_data = np.array(cycle.get('discharge_capacity_in_Ah', []))
-            
-            if len(cap_data) > 0:
-                cycle_capacity = np.max(cap_data[cap_data > 0]) if np.any(cap_data > 0) else 0
-                if cycle_capacity > max_capacity:
-                    max_capacity = cycle_capacity
-                    max_cycle = i + 1
-        
-        return max_cycle
+        if len(current) > 0 and len(discharge_cap) > 0:
+            discharge_mask = current < 0
+            if np.any(discharge_mask):
+                discharge_phase_cap = discharge_cap[discharge_mask]
+                max_cap = np.max(discharge_phase_cap) if len(discharge_phase_cap) > 0 else 0
+                discharge_capacities.append(max_cap)
+            else:
+                discharge_capacities.append(0)
+        else:
+            discharge_capacities.append(0)
     
-    f58 = get_max_capacity_cycle()
+    if discharge_capacities:
+        max_cap_cycle = np.argmax(discharge_capacities) + 1
+        f58 = max_cap_cycle
+    else:
+        f58 = 1
     
-    # F59: 最大容量对应的时间 (Time corresponding to maximum capacity [h])
-    def get_max_capacity_time():
-        max_capacity = 0
-        max_time = 0
-        
-        for i in range(min(100, len(cycle_data))):
-            cycle = cycle_data[i]
-            cap_data = np.array(cycle.get('discharge_capacity_in_Ah', []))
-            time_data = np.array(cycle.get('time_in_s', []))
-            
-            if len(cap_data) > 0 and len(time_data) > 0:
-                cycle_capacity = np.max(cap_data[cap_data > 0]) if np.any(cap_data > 0) else 0
-                if cycle_capacity > max_capacity:
-                    max_capacity = cycle_capacity
-                    max_time = time_data[-1] / 3600  # 转换为小时
-        
-        return max_time
-    
-    f59 = get_max_capacity_time()
+    # F59: 最大容量对应的时间 (保持原有实现，与文档一致)
+    if discharge_capacities:
+        max_cap_idx = np.argmax(discharge_capacities)
+        if max_cap_idx < len(cycle_data):
+            max_cap_cycle = cycle_data[max_cap_idx]
+            time_data = np.array(max_cap_cycle.get('time_in_s', []))
+            if len(time_data) > 0:
+                f59 = time_data[0] / 1e9  # 转换为秒，取循环开始时间
+            else:
+                f59 = 0
+        else:
+            f59 = 0
+    else:
+        f59 = 0
     
     return [f51, f52, f53, f54, f55, f56, f57, f58, f59]
