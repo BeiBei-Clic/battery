@@ -5,7 +5,7 @@ def calculate_f21_f30_isu(battery_data):
     
     cycle_data = battery_data.get('cycle_data', [])
     
-    # 获取放电容量的辅助函数
+    # 获取放电容量
     def get_discharge_capacity(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -22,7 +22,7 @@ def calculate_f21_f30_isu(battery_data):
                 return np.max(valid_caps) if len(valid_caps) > 0 else 0
         return 0
     
-    # 获取放电能量的辅助函数
+    # 获取放电能量
     def get_discharge_energy(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -39,13 +39,13 @@ def calculate_f21_f30_isu(battery_data):
                 discharge_current = current[discharge_mask]
                 discharge_time = time_data[discharge_mask]
                 if len(discharge_time) > 1:
-                    dt = np.diff(discharge_time) / 1e9  # 转换为秒
+                    dt = np.diff(discharge_time) / 1e9  # 纳秒转秒
                     power = discharge_voltage[:-1] * abs(discharge_current[:-1])
                     energy = np.sum(power * dt) / 3600  # 转换为Wh
                     return energy
         return 0
     
-    # 获取循环时间的辅助函数
+    # 获取循环时间
     def get_cycle_time(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -54,10 +54,19 @@ def calculate_f21_f30_isu(battery_data):
         time_data = np.array(cycle.get('time_in_s', []))
         
         if len(time_data) > 1:
-            return (time_data[-1] - time_data[0]) / (1e9 * 3600)  # 转换为小时
+            return (time_data[-1] - time_data[0]) / 1e9  # 纳秒转秒
         return 0
     
-    # 获取充电开始端电压的辅助函数
+    # F21: Discharge Capacity [Ah] 100-10 (差值)
+    f21 = get_discharge_capacity(99) - get_discharge_capacity(9)
+    
+    # F22: Discharge Energy [Wh] 100-10 (差值)
+    f22 = get_discharge_energy(99) - get_discharge_energy(9)
+    
+    # F23: Cycle Time [s] 100-10 (差值)
+    f23 = get_cycle_time(99) - get_cycle_time(9)
+    
+    # F24: Terminal Voltage @ Start of charge [V] (单次值，取第100次循环)
     def get_charge_start_voltage(cycle_idx):
         if cycle_idx >= len(cycle_data):
             return 0
@@ -69,26 +78,17 @@ def calculate_f21_f30_isu(battery_data):
         if len(current) > 0 and len(voltage) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
-                charge_voltage = voltage[charge_mask]
-                return charge_voltage[0] if len(charge_voltage) > 0 else 0
+                charge_indices = np.where(charge_mask)[0]
+                if len(charge_indices) > 0:
+                    return voltage[charge_indices[0]]
         return 0
     
-    # F21: 第100次与第10次循环的放电容量差值
-    f21 = get_discharge_capacity(99) - get_discharge_capacity(9)
+    f24 = get_charge_start_voltage(99)  # 第100次循环的充电开始端电压
     
-    # F22: 第100次与第10次循环的放电能量差值
-    f22 = get_discharge_energy(99) - get_discharge_energy(9)
-    
-    # F23: 第100次与第10次循环的循环时间差值
-    f23 = get_cycle_time(99) - get_cycle_time(9)
-    
-    # F24: 第100次与第10次循环充电开始时的端电压差值
-    f24 = get_charge_start_voltage(99) - get_charge_start_voltage(9)
-    
-    # F25-F26: CC段和CV段充电时间差值
-    def get_cc_cv_times(cycle_idx):
+    # 获取CC/CV段数据
+    def get_cc_cv_data(cycle_idx):
         if cycle_idx >= len(cycle_data):
-            return 0, 0
+            return None, None, None, None, None, None
         
         cycle = cycle_data[cycle_idx]
         current = np.array(cycle.get('current_in_A', []))
@@ -100,130 +100,82 @@ def calculate_f21_f30_isu(battery_data):
             if np.any(charge_mask):
                 charge_current = current[charge_mask]
                 charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask]
+                charge_time = time_data[charge_mask] / 1e9  # 纳秒转秒
                 
                 if len(charge_current) > 10:
                     # 基于电流变化识别CC/CV转换点
                     current_diff = np.abs(np.diff(charge_current))
-                    current_std = np.std(charge_current)
-                    cv_start_candidates = np.where(current_diff > current_std * 0.1)[0]
+                    threshold = np.std(charge_current) * 0.5
                     
-                    if len(cv_start_candidates) > 0:
-                        cv_start = cv_start_candidates[0]
-                        cc_time = (charge_time[cv_start] - charge_time[0]) / 1e9
-                        cv_time = (charge_time[-1] - charge_time[cv_start]) / 1e9
-                        return cc_time, cv_time
-        return 0, 0
-    
-    cc_time_10, cv_time_10 = get_cc_cv_times(9)
-    cc_time_100, cv_time_100 = get_cc_cv_times(99)
-    
-    f25 = cc_time_100 - cc_time_10  # CC段充电时间差值
-    f26 = cv_time_100 - cv_time_10  # CV段充电时间差值
-    
-    # F27: CC段平均电流差值
-    def get_cc_mean_current(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        
-        if len(current) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_current = current[charge_mask]
-                if len(charge_current) > 10:
-                    current_diff = np.abs(np.diff(charge_current))
-                    current_std = np.std(charge_current)
-                    cv_start_candidates = np.where(current_diff > current_std * 0.1)[0]
+                    cv_start_idx = 0
+                    for i in range(len(current_diff)):
+                        if current_diff[i] > threshold:
+                            cv_start_idx = i + 1
+                            break
                     
-                    if len(cv_start_candidates) > 0:
-                        cv_start = cv_start_candidates[0]
-                        cc_current = charge_current[:cv_start]
-                        return np.mean(cc_current) if len(cc_current) > 0 else 0
-        return 0
-    
-    f27 = get_cc_mean_current(99) - get_cc_mean_current(9)
-    
-    # F28: CV段平均电压差值
-    def get_cv_mean_voltage(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
+                    if cv_start_idx > 0 and cv_start_idx < len(charge_current) - 1:
+                        cc_current = charge_current[:cv_start_idx]
+                        cc_voltage = charge_voltage[:cv_start_idx]
+                        cc_time = charge_time[:cv_start_idx]
+                        
+                        cv_current = charge_current[cv_start_idx:]
+                        cv_voltage = charge_voltage[cv_start_idx:]
+                        cv_time = charge_time[cv_start_idx:]
+                        
+                        return cc_current, cc_voltage, cc_time, cv_current, cv_voltage, cv_time
+                    else:
+                        # 简单分割：前半段CC，后半段CV
+                        mid_point = len(charge_current) // 2
+                        cc_current = charge_current[:mid_point]
+                        cc_voltage = charge_voltage[:mid_point]
+                        cc_time = charge_time[:mid_point]
+                        
+                        cv_current = charge_current[mid_point:]
+                        cv_voltage = charge_voltage[mid_point:]
+                        cv_time = charge_time[mid_point:]
+                        
+                        return cc_current, cc_voltage, cc_time, cv_current, cv_voltage, cv_time
         
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        voltage = np.array(cycle.get('voltage_in_V', []))
-        
-        if len(current) > 0 and len(voltage) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_current = current[charge_mask]
-                charge_voltage = voltage[charge_mask]
-                
-                if len(charge_current) > 10:
-                    current_diff = np.abs(np.diff(charge_current))
-                    current_std = np.std(charge_current)
-                    cv_start_candidates = np.where(current_diff > current_std * 0.1)[0]
-                    
-                    if len(cv_start_candidates) > 0:
-                        cv_start = cv_start_candidates[0]
-                        cv_voltage = charge_voltage[cv_start:]
-                        return np.mean(cv_voltage) if len(cv_voltage) > 0 else 0
-        return 0
+        return None, None, None, None, None, None
     
-    f28 = get_cv_mean_voltage(99) - get_cv_mean_voltage(9)
+    # F25: Charge time of CC segment [s] (单次值，取第100次循环)
+    cc_current, cc_voltage, cc_time, _, _, _ = get_cc_cv_data(99)
+    if cc_time is not None and len(cc_time) > 1:
+        f25 = cc_time[-1] - cc_time[0]
+    else:
+        f25 = 0
     
-    # F29: CCCV段斜率差值 (修复时间单位转换问题)
-    def get_cccv_slope(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        voltage = np.array(cycle.get('voltage_in_V', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask] / 1e9  # 转换为秒
-                
-                if len(charge_voltage) > 1 and len(charge_time) > 1:
-                    slope = np.polyfit(charge_time, charge_voltage, 1)[0]
-                    return slope
-        return 0
+    # F26: Charge time of CV segment [s] (单次值，取第100次循环)
+    _, _, _, cv_current, cv_voltage, cv_time = get_cc_cv_data(99)
+    if cv_time is not None and len(cv_time) > 1:
+        f26 = cv_time[-1] - cv_time[0]
+    else:
+        f26 = 0
     
-    f29 = get_cccv_slope(99) - get_cccv_slope(9)
+    # F27: Mean current during CC segment [A] (单次值，取第100次循环)
+    if cc_current is not None and len(cc_current) > 0:
+        f27 = np.mean(cc_current)
+    else:
+        f27 = 0
     
-    # F30: CVCC段斜率差值 (修复时间单位转换问题)
-    def get_cvcc_slope(cycle_idx):
-        if cycle_idx >= len(cycle_data):
-            return 0
-        
-        cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        voltage = np.array(cycle.get('voltage_in_V', []))
-        time_data = np.array(cycle.get('time_in_s', []))
-        
-        if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
-            charge_mask = current > 0
-            if np.any(charge_mask):
-                charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask] / 1e9  # 转换为秒
-                
-                if len(charge_voltage) > 2:
-                    # 取后半段数据
-                    half_point = len(charge_voltage) // 2
-                    voltage_half = charge_voltage[half_point:]
-                    time_half = charge_time[half_point:]
-                    
-                    if len(voltage_half) > 1:
-                        slope = np.polyfit(time_half, voltage_half, 1)[0]
-                        return slope
-        return 0
+    # F28: Mean voltage during CV segment [V] (单次值，取第100次循环)
+    if cv_voltage is not None and len(cv_voltage) > 0:
+        f28 = np.mean(cv_voltage)
+    else:
+        f28 = 0
     
-    f30 = get_cvcc_slope(99) - get_cvcc_slope(9)
+    # F29: Slope of CCCV-CCCT segment (单次值，取第100次循环的CC段电压-时间斜率)
+    if cc_voltage is not None and cc_time is not None and len(cc_voltage) > 2:
+        slope, _ = np.polyfit(cc_time, cc_voltage, 1)
+        f29 = slope
+    else:
+        f29 = 0
+    
+    # F30: Slope of CVCC-CVCT segment (单次值，取第100次循环的CV段电流-时间斜率)
+    if cv_current is not None and cv_time is not None and len(cv_current) > 2:
+        slope, _ = np.polyfit(cv_time, cv_current, 1)
+        f30 = slope
+    else:
+        f30 = 0
     
     return [f21, f22, f23, f24, f25, f26, f27, f28, f29, f30]

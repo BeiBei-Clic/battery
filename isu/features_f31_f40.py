@@ -6,10 +6,10 @@ def calculate_f31_f40_isu(battery_data):
     
     cycle_data = battery_data.get('cycle_data', [])
     
-    # 获取充电段数据的辅助函数
-    def get_charge_segments(cycle_idx):
+    # 获取第100次循环的充电段数据
+    def get_charge_segments_with_current(cycle_idx):
         if cycle_idx >= len(cycle_data):
-            return [], []
+            return [], [], []
         
         cycle = cycle_data[cycle_idx]
         current = np.array(cycle.get('current_in_A', []))
@@ -19,54 +19,61 @@ def calculate_f31_f40_isu(battery_data):
         if len(current) > 0 and len(voltage) > 0 and len(time_data) > 0:
             charge_mask = current > 0
             if np.any(charge_mask):
+                charge_current = current[charge_mask]
                 charge_voltage = voltage[charge_mask]
                 charge_time = time_data[charge_mask]
                 
                 if len(charge_voltage) > 2:
                     # 分为前半段(CCCV-CCCT)和后半段(CVCC-CVCT)
                     half_point = len(charge_voltage) // 2
-                    segment1 = np.column_stack((charge_time[:half_point], charge_voltage[:half_point]))
-                    segment2 = np.column_stack((charge_time[half_point:], charge_voltage[half_point:]))
-                    return segment1, segment2
-        return np.array([]), np.array([])
+                    segment1_current = charge_current[:half_point]
+                    segment1_voltage = charge_voltage[:half_point]
+                    segment1_time = charge_time[:half_point]
+                    
+                    segment2_current = charge_current[half_point:]
+                    segment2_voltage = charge_voltage[half_point:]
+                    segment2_time = charge_time[half_point:]
+                    
+                    return (segment1_current, segment1_voltage, segment1_time), (segment2_current, segment2_voltage, segment2_time)
+        return ([], [], []), ([], [], [])
     
-    # 计算段能量的辅助函数
-    def calculate_segment_energy(segment, mean_current=0.5):
-        if len(segment) < 2:
+    # 计算段能量的辅助函数（基于实际电流数据）
+    def calculate_segment_energy(current_data, voltage_data, time_data):
+        if len(current_data) < 2 or len(voltage_data) < 2 or len(time_data) < 2:
             return 0
         
-        time_vals = segment[:, 0]
-        voltage_vals = segment[:, 1]
-        
-        if len(time_vals) > 1:
-            dt = np.diff(time_vals) / 1e9  # 转换为秒
-            power = voltage_vals[:-1] * mean_current  # 假设平均电流
+        if len(time_data) > 1:
+            dt = np.diff(time_data) / 1e9  # 转换为秒
+            power = current_data[:-1] * voltage_data[:-1]  # 使用实际电流和电压
             energy = np.sum(power * dt) / 3600  # 转换为Wh
             return energy
         return 0
     
-    # 修复熵计算的辅助函数
+    # 计算段功率的辅助函数（用于F31，单位为W）
+    def calculate_segment_power(current_data, voltage_data):
+        if len(current_data) == 0 or len(voltage_data) == 0:
+            return 0
+        power = current_data * voltage_data
+        return np.mean(power)  # 平均功率
+    
+    # 计算熵的辅助函数
     def calculate_entropy(data):
         if len(data) == 0:
             return 0
         
-        # 将数据分箱来计算概率分布
         data_clean = data[np.isfinite(data)]
         if len(data_clean) < 2:
             return 0
             
-        # 使用固定的箱数或根据数据长度调整
         n_bins = min(10, max(3, len(data_clean) // 5))
         hist, _ = np.histogram(data_clean, bins=n_bins)
         
-        # 计算概率分布
         prob = hist / np.sum(hist)
-        prob = prob[prob > 0]  # 移除0概率
+        prob = prob[prob > 0]
         
         if len(prob) == 0:
             return 0
             
-        # 计算香农熵
         entropy = -np.sum(prob * np.log2(prob))
         return entropy
     
@@ -76,54 +83,41 @@ def calculate_f31_f40_isu(battery_data):
             return 0
         return stats.skew(data)
     
-    # 获取第10次和第100次循环的充电段数据
-    segment1_10, segment2_10 = get_charge_segments(9)   # 第10次循环
-    segment1_100, segment2_100 = get_charge_segments(99) # 第100次循环
+    # 获取第100次循环的充电段数据
+    segment1, segment2 = get_charge_segments_with_current(99)  # 第100次循环
     
-    # F31: CCCV-CCCT段能量差值
-    energy1_10 = calculate_segment_energy(segment1_10)
-    energy1_100 = calculate_segment_energy(segment1_100)
-    f31 = energy1_100 - energy1_10
+    segment1_current, segment1_voltage, segment1_time = segment1
+    segment2_current, segment2_voltage, segment2_time = segment2
     
-    # F32: CVCC-CVCT段能量差值
-    energy2_10 = calculate_segment_energy(segment2_10)
-    energy2_100 = calculate_segment_energy(segment2_100)
-    f32 = energy2_100 - energy2_10
+    # F31: CCCV-CCCT段的能量 [W] - 实际应为功率
+    f31 = calculate_segment_power(segment1_current, segment1_voltage)
     
-    # F33: CCCV-CCCT段能量比差值
-    ratio_10 = energy1_10 / energy2_10 if energy2_10 != 0 else 0
-    ratio_100 = energy1_100 / energy2_100 if energy2_100 != 0 else 0
-    f33 = ratio_100 - ratio_10
+    # F32: CVCC-CVCT段的能量 [Wh]
+    f32 = calculate_segment_energy(segment2_current, segment2_voltage, segment2_time)
     
-    # F34: CVCC-CVCT段能量差的差值
-    energy_diff_10 = energy1_10 - energy2_10
-    energy_diff_100 = energy1_100 - energy2_100
-    f34 = energy_diff_100 - energy_diff_10
+    # F33: 两段能量比 CCCV-CCCT / CVCC-CVCT
+    energy1 = calculate_segment_energy(segment1_current, segment1_voltage, segment1_time)
+    f33 = energy1 / f32 if f32 != 0 else 0
     
-    # F35: CCCV-CCCT段熵差值 (修复熵计算)
-    entropy1_10 = calculate_entropy(segment1_10[:, 1]) if len(segment1_10) > 0 else 0
-    entropy1_100 = calculate_entropy(segment1_100[:, 1]) if len(segment1_100) > 0 else 0
-    f35 = entropy1_100 - entropy1_10
+    # F34: 两段能量差 (CCCV-CCCT) - (CVCC-CVCT)
+    f34 = energy1 - f32
     
-    # F36: CVCC-CVCT段熵差值 (修复熵计算)
-    entropy2_10 = calculate_entropy(segment2_10[:, 1]) if len(segment2_10) > 0 else 0
-    entropy2_100 = calculate_entropy(segment2_100[:, 1]) if len(segment2_100) > 0 else 0
-    f36 = entropy2_100 - entropy2_10
+    # F35: CCCV-CCCT段的熵 eq 8
+    f35 = calculate_entropy(segment1_voltage) if len(segment1_voltage) > 0 else 0
     
-    # F37: CCCV-CCCT段香农熵差值 (与F35相同)
-    f37 = f35
+    # F36: CCCV-CCCT段的熵 eq 8 (与F35相同，按文档定义)
+    f36 = f35
     
-    # F38: CVCC-CVCT段香农熵差值 (与F36相同)
-    f38 = f36
+    # F37: CCCV段的香农熵
+    f37 = calculate_entropy(segment1_voltage) if len(segment1_voltage) > 0 else 0
     
-    # F39: CCCV-CCCT段偏度差值
-    skew1_10 = calculate_skewness(segment1_10[:, 1]) if len(segment1_10) > 0 else 0
-    skew1_100 = calculate_skewness(segment1_100[:, 1]) if len(segment1_100) > 0 else 0
-    f39 = skew1_100 - skew1_10
+    # F38: CVCC段的香农熵
+    f38 = calculate_entropy(segment2_voltage) if len(segment2_voltage) > 0 else 0
     
-    # F40: CVCC-CVCT段偏度差值
-    skew2_10 = calculate_skewness(segment2_10[:, 1]) if len(segment2_10) > 0 else 0
-    skew2_100 = calculate_skewness(segment2_100[:, 1]) if len(segment2_100) > 0 else 0
-    f40 = skew2_100 - skew2_10
+    # F39: CCCV-CCCT段的偏度系数 eq 4
+    f39 = calculate_skewness(segment1_voltage) if len(segment1_voltage) > 0 else 0
+    
+    # F40: CVCC-CVCT段的偏度系数 eq 4
+    f40 = calculate_skewness(segment2_voltage) if len(segment2_voltage) > 0 else 0
     
     return [f31, f32, f33, f34, f35, f36, f37, f38, f39, f40]

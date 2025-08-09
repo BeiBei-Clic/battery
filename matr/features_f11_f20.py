@@ -4,23 +4,33 @@ import math
 def calculate_f11_f20_matr(battery_data):
     """计算MATR数据的F11-F20特征，严格按照指导文件定义"""
     
-    cycle_data = battery_data.get('cycle_data', {})
+    cycle_data = battery_data.get('cycle_data', [])
+    
+    # MATR数据的cycle_data是列表，不是字典
+    if not isinstance(cycle_data, list) or len(cycle_data) < 2:
+        return [0] * 10
     
     # 获取放电容量的辅助函数
     def get_discharge_capacity(cycle_idx):
-        if cycle_idx not in cycle_data:
+        if cycle_idx >= len(cycle_data):
             return 0
         
         cycle = cycle_data[cycle_idx]
-        current = np.array(cycle.get('current_in_A', []))
-        cap_data = np.array(cycle.get('discharge_capacity_in_Ah', []))
-        
-        if len(current) > 0 and len(cap_data) > 0:
-            discharge_mask = current < 0
-            if np.any(discharge_mask):
-                discharge_phase_cap = cap_data[discharge_mask]
-                valid_caps = discharge_phase_cap[discharge_phase_cap > 0]
-                return np.max(valid_caps) if len(valid_caps) > 0 else 0
+        if not isinstance(cycle, dict):
+            return 0
+            
+        # 检查放电容量字段
+        capacity_fields = ['discharge_capacity_in_Ah', 'discharge_capacity', 'capacity']
+        for field in capacity_fields:
+            if field in cycle:
+                capacity_value = cycle[field]
+                if isinstance(capacity_value, (list, np.ndarray)):
+                    capacity_array = np.array(capacity_value)
+                    # 获取放电阶段的最大容量
+                    valid_caps = capacity_array[capacity_array > 0]
+                    return np.max(valid_caps) if len(valid_caps) > 0 else 0
+                else:
+                    return capacity_value if capacity_value > 0 else 0
         return 0
     
     # F11: 第2次循环的放电容量 (Discharge capacity, cycle 2)
@@ -30,10 +40,9 @@ def calculate_f11_f20_matr(battery_data):
     # 计算所有周期的放电容量，找到最大值
     all_discharge_caps = []
     for i in range(min(100, len(cycle_data))):
-        if i in cycle_data:
-            cap = get_discharge_capacity(i)
-            if cap > 0:
-                all_discharge_caps.append(cap)
+        cap = get_discharge_capacity(i)
+        if cap > 0:
+            all_discharge_caps.append(cap)
     
     max_discharge_cap = np.max(all_discharge_caps) if len(all_discharge_caps) > 0 else 0
     f12 = max_discharge_cap - f11
@@ -44,14 +53,29 @@ def calculate_f11_f20_matr(battery_data):
     # F14: 前5个循环的平均充电时间 (Average charge time, first 5 cycles)
     charge_times = []
     for i in range(min(5, len(cycle_data))):
-        if i not in cycle_data:
+        cycle = cycle_data[i]
+        if not isinstance(cycle, dict):
             continue
             
-        cycle = cycle_data[i]
-        current = np.array(cycle.get('current_in_A', []))
-        time_data = np.array(cycle.get('time_in_s', []))
+        # 检查电流和时间字段
+        current_fields = ['current_in_A', 'current', 'I']
+        time_fields = ['time_in_s', 'time', 'timestamp']
         
-        if len(current) > 0 and len(time_data) > 0:
+        current = None
+        time_data = None
+        
+        for field in current_fields:
+            if field in cycle:
+                current = np.array(cycle[field])
+                break
+                
+        for field in time_fields:
+            if field in cycle:
+                time_data = np.array(cycle[field])
+                break
+        
+        if current is not None and time_data is not None and len(current) > 0 and len(time_data) > 0:
+            # 找到充电阶段（电流>0）
             charge_mask = current > 0
             if np.any(charge_mask):
                 charge_indices = np.where(charge_mask)[0]
@@ -73,11 +97,16 @@ def calculate_f11_f20_matr(battery_data):
     temp_time_integral = 0
     
     for i in range(1, min(100, len(cycle_data))):  # 第2-100次循环
-        if i not in cycle_data:
+        cycle = cycle_data[i]
+        if not isinstance(cycle, dict):
             continue
             
-        cycle = cycle_data[i]
-        time_data = np.array(cycle.get('time_in_s', []))
+        # 检查时间字段
+        time_data = None
+        for field in ['time_in_s', 'time', 'timestamp']:
+            if field in cycle:
+                time_data = np.array(cycle[field])
+                break
         
         # 检查多种可能的温度字段名
         temp_fields = ['temperature_in_C', 'temp_in_C', 'T_in_C', 'temperature', 'temp']
@@ -89,7 +118,7 @@ def calculate_f11_f20_matr(battery_data):
                 if len(temp_data) > 0 and not np.all(np.isnan(temp_data)):
                     break
         
-        if temp_data is not None and len(temp_data) > 0 and len(time_data) > 0:
+        if temp_data is not None and len(temp_data) > 0 and time_data is not None and len(time_data) > 0:
             valid_temp = temp_data[~np.isnan(temp_data)]
             if len(valid_temp) > 0:
                 temp_data_all.extend(valid_temp)
