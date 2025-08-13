@@ -95,95 +95,38 @@ def calculate_f1_f10_matr(battery_data):
         return None
     
     # F1-F6: 基于Qdlin计算ΔQ₁₀₀₋₁₀
-    if len(cycle_data) >= 100:
-        cycle_10_idx = 9   # 第10次循环的索引
-        cycle_100_idx = 99 # 第100次循环的索引
-        
-        Qdlin_10 = get_qdlin(cycle_10_idx)
-        Qdlin_100 = get_qdlin(cycle_100_idx)
+    if len(cycle_data) >= 100:       
+        Qdlin_10 = get_qdlin(9)
+        Qdlin_100 = get_qdlin(99)
         
         if Qdlin_10 is not None and Qdlin_100 is not None and len(Qdlin_10) == len(Qdlin_100):
             # 计算ΔQ(V) = Q₁₀₀(V) - Q₁₀(V)
             delta_q = Qdlin_100 - Qdlin_10
-            
-            # F1: 最小绝对值的对数
-            min_abs_delta_q = np.min(np.abs(delta_q))
-            f1 = math.log10(min_abs_delta_q) if min_abs_delta_q > 0 else -10
-            
+
+            f1=math.log(np.abs(np.min(delta_q)), 10)
+
             # F2: ΔQ₁₀₀₋₁₀的平均值
-            f2 = np.mean(delta_q)
-            
+            f2 = np.mean(delta_q)            
             # F3: ΔQ₁₀₀₋₁₀的方差
-            f3 = np.var(delta_q)
-            
+            f3 = np.var(delta_q)            
             # F4: ΔQ₁₀₀₋₁₀的偏度
-            f4 = stats.skew(delta_q)
-            
+            f4 = stats.skew(delta_q)            
             # F5: ΔQ₁₀₀₋₁₀的峰度
-            f5 = stats.kurtosis(delta_q)
-            
+
+            def get_Kurtosis(data):
+                mean = np.mean(data)
+                numerator = np.mean((data - mean) **4)  # 四阶中心矩的均值
+                denominator = (np.mean((data - mean)** 2)) **2  # 二阶中心矩（方差）的平方
+                fraction = numerator / denominator  # 总体峰度（未减3）
+                result = np.log(np.abs(fraction))  # 取绝对值的自然对数
+                return result
+
+            f5=get_Kurtosis(delta_q)        
             # F6: ΔQ₁₀₀₋₁₀在2V处的值
             # Qdlin通常是在固定电压点的数据，假设是从3.5V到2V的1000个点
             # 取最后一个点作为2V处的值
             f6 = delta_q[-1] if len(delta_q) > 0 else 0
-            
-        else:
-            # 如果没有Qdlin数据，使用Q-V曲线计算
-            qv_curves = extract_qv_curves_matr(cycle_data)
-            delta_q_result = calculate_delta_q_matr(qv_curves, 10, 100)
-            
-            if delta_q_result is not None:
-                delta_q, common_v = delta_q_result
-                
-                min_abs_delta_q = np.min(np.abs(delta_q))
-                f1 = math.log10(min_abs_delta_q) if min_abs_delta_q > 0 else -10
-                f2 = np.mean(delta_q)
-                f3 = np.var(delta_q)
-                f4 = stats.skew(delta_q)
-                f5 = stats.kurtosis(delta_q)
-                f6 = delta_q[-1] if len(delta_q) > 0 else 0
-            else:
-                f1 = f2 = f3 = f4 = f5 = f6 = 0
-    else:
-        # 如果周期数不足100，尝试使用最大可用周期
-        max_cycle = len(cycle_data)
-        if max_cycle >= 10:
-            cycle_10_idx = 9
-            cycle_max_idx = max_cycle - 1
-            
-            Qdlin_10 = get_qdlin(cycle_10_idx)
-            Qdlin_max = get_qdlin(cycle_max_idx)
-            
-            if Qdlin_10 is not None and Qdlin_max is not None and len(Qdlin_10) == len(Qdlin_max):
-                delta_q = Qdlin_max - Qdlin_10
-                
-                min_abs_delta_q = np.min(np.abs(delta_q))
-                f1 = math.log10(min_abs_delta_q) if min_abs_delta_q > 0 else -10
-                f2 = np.mean(delta_q)
-                f3 = np.var(delta_q)
-                f4 = stats.skew(delta_q)
-                f5 = stats.kurtosis(delta_q)
-                f6 = delta_q[-1] if len(delta_q) > 0 else 0
-            else:
-                # 使用Q-V曲线计算
-                qv_curves = extract_qv_curves_matr(cycle_data)
-                delta_q_result = calculate_delta_q_matr(qv_curves, 10, max_cycle)
-                
-                if delta_q_result is not None:
-                    delta_q, common_v = delta_q_result
-                    
-                    min_abs_delta_q = np.min(np.abs(delta_q))
-                    f1 = math.log10(min_abs_delta_q) if min_abs_delta_q > 0 else -10
-                    f2 = np.mean(delta_q)
-                    f3 = np.var(delta_q)
-                    f4 = stats.skew(delta_q)
-                    f5 = stats.kurtosis(delta_q)
-                    f6 = delta_q[-1] if len(delta_q) > 0 else 0
-                else:
-                    f1 = f2 = f3 = f4 = f5 = f6 = 0
-        else:
-            f1 = f2 = f3 = f4 = f5 = f6 = 0
-    
+              
     # F7-F8: 第2-100次循环的容量衰减曲线线性拟合的斜率和截距
     discharge_caps = []
     for i in range(1, min(100, len(cycle_data))):

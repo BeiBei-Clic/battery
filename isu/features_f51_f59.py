@@ -213,4 +213,97 @@ def calculate_f51_f59_isu(battery_data):
     else:
         f59 = 0
     
+    # F59: 达到最大容量时的累计时间
+    def get_c_dc_time():
+        """计算从初始循环到最大放电容量所在循环的总充电时间与总放电时间之和"""
+        
+        # 1. 定位最大放电容量所在的循环
+        # 提取前100次循环的放电容量数据
+        qdischarge = []
+        for i in range(1, min(100, len(cycle_data))):  # 从第2次循环开始（索引1）
+            cycle = cycle_data[i]
+            current = np.array(cycle.get('current_in_A', []))
+            discharge_cap = np.array(cycle.get('discharge_capacity_in_Ah', []))
+            
+            if len(current) > 0 and len(discharge_cap) > 0:
+                discharge_mask = current < 0
+                if np.any(discharge_mask):
+                    discharge_phase_cap = discharge_cap[discharge_mask]
+                    max_cap = np.max(discharge_phase_cap) if len(discharge_phase_cap) > 0 else 0
+                    qdischarge.append(max_cap)
+                else:
+                    qdischarge.append(0)
+            else:
+                qdischarge.append(0)
+        
+        if not qdischarge:
+            return 0
+        
+        # 过滤异常值：将放电容量大于1.3的值置为0
+        qdischarge = np.array(qdischarge)
+        qdischarge[qdischarge > 1.3] = 0
+        
+        # 找到最大放电容量对应的循环索引
+        max_qd_index = np.argmax(qdischarge) + 2  # 加2是因为从第2次循环开始计数
+        
+        # 2. 计算累计充电时间与放电时间
+        all_discharge_time = 0
+        all_charge_time = 0
+        
+        # 遍历从第1次循环到最大容量所在循环
+        for cycle_idx in range(min(max_qd_index, len(cycle_data))):
+            cycle = cycle_data[cycle_idx]
+            current = np.array(cycle.get('current_in_A', []))
+            time_data = np.array(cycle.get('time_in_s', []))
+            
+            if len(current) > 0 and len(time_data) > 0:
+                # 计算放电时间
+                discharge_mask = current < 0
+                if np.any(discharge_mask):
+                    discharge_indices = np.where(discharge_mask)[0]
+                    if len(discharge_indices) > 0:
+                        start_time = time_data[discharge_indices[0]]
+                        end_time = time_data[discharge_indices[-1]]
+                        duration = (end_time - start_time) / 1e9  # ISU数据转换为秒
+                        all_discharge_time += duration
+                
+                # 计算充电时间
+                charge_mask = current > 0
+                if np.any(charge_mask):
+                    charge_indices = np.where(charge_mask)[0]
+                    if len(charge_indices) > 0:
+                        start_time = time_data[charge_indices[0]]
+                        end_time = time_data[charge_indices[-1]]
+                        duration = (end_time - start_time) / 1e9  # ISU数据转换为秒
+                        
+                        # 时间异常处理
+                        if duration > 100:  # 时间异常
+                            # 尝试从后续循环获取合理值
+                            for next_idx in range(cycle_idx + 1, min(cycle_idx + 5, len(cycle_data))):
+                                next_cycle = cycle_data[next_idx]
+                                next_current = np.array(next_cycle.get('current_in_A', []))
+                                next_time = np.array(next_cycle.get('time_in_s', []))
+                                
+                                if len(next_current) > 0 and len(next_time) > 0:
+                                    next_charge_mask = next_current > 0
+                                    if np.any(next_charge_mask):
+                                        next_charge_indices = np.where(next_charge_mask)[0]
+                                        if len(next_charge_indices) > 0:
+                                            next_start = next_time[next_charge_indices[0]]
+                                            next_end = next_time[next_charge_indices[-1]]
+                                            next_duration = (next_end - next_start) / 1e9
+                                            if next_duration <= 100:
+                                                duration = next_duration
+                                                break
+                            else:
+                                duration = 0  # 如果都异常，则设为0
+                        
+                        all_charge_time += duration
+        
+        # 3. 计算F59的值
+        charge_and_dis_time = all_charge_time + all_discharge_time
+        return charge_and_dis_time
+    
+    f59 = get_c_dc_time()
+    
     return [f51, f52, f53, f54, f55, f56, f57, f58, f59]

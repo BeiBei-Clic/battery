@@ -77,32 +77,23 @@ def calculate_f1_f10_isu(battery_data):
     
     if delta_q_result is None:
         return [0] * 10
-    
     delta_q, common_v = delta_q_result
-    
-    # F1: ΔQ₁₀₀₋₁₀的最小绝对值的对数
-    min_abs_delta_q = np.min(np.abs(delta_q))
-    f1 = math.log10(min_abs_delta_q) if min_abs_delta_q > 0 else -10
-    
+    # F1: ΔQ₁₀₀₋₁₀的最小值
+    f1 = np.min(delta_q)
     # F2: ΔQ₁₀₀₋₁₀的平均值
     f2 = np.mean(delta_q)
-    
     # F3: ΔQ₁₀₀₋₁₀的方差
     f3 = np.var(delta_q)
-    
     # F4: ΔQ₁₀₀₋₁₀的偏度
     f4 = stats.skew(delta_q)
-    
     # F5: ΔQ₁₀₀₋₁₀的峰度
     f5 = stats.kurtosis(delta_q)
-    
     # F6: ΔQ₁₀₀₋₁₀在2V处的值
     if len(common_v) > 0:
         idx_2v = np.argmin(np.abs(common_v - 2.0))
         f6 = delta_q[idx_2v]
     else:
         f6 = 0
-    
     # F7-F8: 第2-100次循环的容量衰减曲线线性拟合的斜率和截距
     discharge_caps = []
     for i in range(1, min(100, len(cycle_data))):

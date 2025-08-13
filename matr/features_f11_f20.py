@@ -19,20 +19,17 @@ def calculate_f11_f20_matr(battery_data):
         if not isinstance(cycle, dict):
             return 0
             
-        # 检查放电容量字段
-        capacity_fields = ['discharge_capacity_in_Ah', 'discharge_capacity', 'capacity']
-        for field in capacity_fields:
-            if field in cycle:
-                capacity_value = cycle[field]
-                if isinstance(capacity_value, (list, np.ndarray)):
-                    capacity_array = np.array(capacity_value)
-                    # 获取放电阶段的最大容量
-                    valid_caps = capacity_array[capacity_array > 0]
-                    return np.max(valid_caps) if len(valid_caps) > 0 else 0
-                else:
-                    return capacity_value if capacity_value > 0 else 0
-        return 0
-    
+        capacity_value = cycle['discharge_capacity_in_Ah']
+
+        if isinstance(capacity_value, (list, np.ndarray)):
+            capacity_array = np.array(capacity_value)
+            # 获取放电阶段的最大容量
+            valid_caps = capacity_array[capacity_array > 0]
+            return np.max(valid_caps) if len(valid_caps) > 0 else 0
+        else:
+            return capacity_value if capacity_value > 0 else 0
+
+
     # F11: 第2次循环的放电容量 (Discharge capacity, cycle 2)
     f11 = get_discharge_capacity(1)  # 索引1对应第2次循环
     
@@ -56,23 +53,11 @@ def calculate_f11_f20_matr(battery_data):
         cycle = cycle_data[i]
         if not isinstance(cycle, dict):
             continue
-            
-        # 检查电流和时间字段
-        current_fields = ['current_in_A', 'current', 'I']
-        time_fields = ['time_in_s', 'time', 'timestamp']
-        
-        current = None
-        time_data = None
-        
-        for field in current_fields:
-            if field in cycle:
-                current = np.array(cycle[field])
-                break
-                
-        for field in time_fields:
-            if field in cycle:
-                time_data = np.array(cycle[field])
-                break
+        current=None
+        time_data=None        
+        current = np.array(cycle['current_in_A'])
+
+        time_data = np.array(cycle['time_in_s'])
         
         if current is not None and time_data is not None and len(current) > 0 and len(time_data) > 0:
             # 找到充电阶段（电流>0）
@@ -84,9 +69,7 @@ def calculate_f11_f20_matr(battery_data):
                     charge_end_time = time_data[charge_indices[-1]]
                     charge_duration = charge_end_time - charge_start_time
                     
-                    # 过滤异常值：充电时间应该在合理范围内
-                    if 600 <= charge_duration <= 36000:  # 10分钟到10小时
-                        charge_times.append(charge_duration)
+                    charge_times.append(charge_duration)
     
     f14 = np.mean(charge_times) if len(charge_times) > 0 else 0
     

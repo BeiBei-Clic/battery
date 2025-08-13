@@ -1,6 +1,7 @@
 import pickle
 import numpy as np
 import os
+from datetime import datetime  # 导入datetime模块获取当前时间
 from isu.features_f1_f10 import calculate_f1_f10_isu
 from isu.features_f11_f20 import calculate_f11_f20_isu
 from isu.features_f21_f30 import calculate_f21_f30_isu
@@ -31,15 +32,7 @@ def extract_all_isu_features(battery_data, filename):
     
     # 标签：循环寿命
     y = len(cycle_data)
-    
-    print(f"  总特征数: {len(all_features)}")
-    print(f"  F1-F5: {[f'{x:.3f}' for x in f1_f10[:5]]}")
-    print(f"  F11-F13: {[f'{x:.3f}' for x in f11_f20[:3]]}")
-    print(f"  F21-F23: {[f'{x:.3f}' for x in f21_f30[:3]]}")
-    print(f"  F31-F33: {[f'{x:.3f}' for x in f31_f40[:3]]}")
-    print(f"  F41-F43: {[f'{x:.3f}' for x in f41_f50[:3]]}")
-    print(f"  F51-F53: {[f'{x:.3f}' for x in f51_f59[:3]]}")
-    
+        
     return all_features, y
 
 def process_isu_all_features():
@@ -52,7 +45,8 @@ def process_isu_all_features():
     all_labels = []
     processed_files = []
     
-    for filename in pkl_files[:3]:  # 先测试前3个文件
+    for filename in pkl_files :  
+
         file_path = os.path.join(data_dir, filename)
         with open(file_path, 'rb') as f:
             battery_data = pickle.load(f)
@@ -64,8 +58,14 @@ def process_isu_all_features():
             processed_files.append(filename)
             print(f"处理 {filename}，特征数: {len(features)}，标签: {label}")
 
+    # 获取当前时间并格式化为"月日时分"
+    current_time = datetime.now().strftime("%m%d%H%M")
+    # 构建带时间戳的文件名
+    output_filename = f"./result/isu_{current_time}.txt"
+
+    
     # 保存结果
-    with open('isu_all_features.txt', 'w') as f:
+    with open(output_filename, 'w') as f:
         # 写入表头
         header = "Battery_Name\t" + "\t".join([f"F{i}" for i in range(1, 60)]) + "\tCycle_Life\n"
         f.write(header)
@@ -77,7 +77,7 @@ def process_isu_all_features():
             f.write(f"{filename}\t{feature_str}\t{label}\n")
 
     print(f"ISU所有特征处理完成，共处理 {len(processed_files)} 个文件")
-    print(f"结果保存到: isu_all_features.txt")
+    print(f"结果保存到: {output_filename}")
 
 if __name__ == "__main__":
     process_isu_all_features()

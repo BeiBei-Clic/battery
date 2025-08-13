@@ -208,7 +208,7 @@ def calculate_f51_f59_matr(battery_data):
             if np.any(charge_mask):
                 charge_current = current[charge_mask]
                 charge_voltage = voltage[charge_mask]
-                charge_time = time_data[charge_mask] / 1e9  # 转换为秒
+                charge_time = time_data[charge_mask]  # MATR数据已经是秒，不需要转换
                 
                 # 识别CC段
                 if len(charge_current) > 10:
@@ -290,19 +290,104 @@ def calculate_f51_f59_matr(battery_data):
     else:
         f58 = 1
     
-    # F59: 最大容量对应的时间 (保持原有实现，与文档一致)
-    if discharge_capacities:
-        max_cap_idx = np.argmax(discharge_capacities)
-        if max_cap_idx < len(cycle_data):
-            max_cap_cycle = cycle_data[max_cap_idx]
-            time_data = np.array(max_cap_cycle.get('time_in_s', []))
-            if len(time_data) > 0:
-                f59 = time_data[0] / 1e9  # 转换为秒，取循环开始时间
+    # F59: 达到最大容量时的累计时间
+    def get_c_dc_time():
+        """计算从初始循环到最大放电容量所在循环的总充电时间与总放电时间之和"""
+        
+        # 1. 定位最大放电容量所在的循环
+        # 提取前100次循环的放电容量数据
+        qdischarge = []
+        for i in range(1, min(100, len(cycle_data))):  # 从第2次循环开始（索引1）
+            cycle = cycle_data[i]
+            current = np.array(cycle.get('current_in_A', []))
+            discharge_cap = np.array(cycle.get('discharge_capacity_in_Ah', []))
+            
+            if len(current) > 0 and len(discharge_cap) > 0:
+                discharge_mask = current < 0
+                if np.any(discharge_mask):
+                    discharge_phase_cap = discharge_cap[discharge_mask]
+                    max_cap = np.max(discharge_phase_cap) if len(discharge_phase_cap) > 0 else 0
+                    qdischarge.append(max_cap)
+                else:
+                    qdischarge.append(0)
             else:
-                f59 = 0
-        else:
-            f59 = 0
-    else:
-        f59 = 0
+                qdischarge.append(0)
+        
+        if not qdischarge:
+            return 0
+        
+        # 过滤异常值：将放电容量大于1.3的值置为0
+        qdischarge = np.array(qdischarge)
+        qdischarge[qdischarge > 1.3] = 0
+        
+        # 找到最大放电容量对应的循环索引
+        max_qd_index = np.argmax(qdischarge) + 2  # 加2是因为从第2次循环开始计数
+        
+        # 2. 计算累计充电时间与放电时间
+        all_discharge_time = 0
+        all_charge_time = 0
+        
+        # 遍历从第1次循环到最大容量所在循环
+        for cycle_idx in range(min(max_qd_index, len(cycle_data))):
+            cycle = cycle_data[cycle_idx]
+            current = np.array(cycle.get('current_in_A', []))
+            time_data = np.array(cycle.get('time_in_s', []))
+            
+            if len(current) > 0 and len(time_data) > 0:
+                # 计算放电时间
+                discharge_time = get_discharge_time(cycle)
+                all_discharge_time += discharge_time
+                
+                # 计算充电时间
+                charge_time = get_charge_time(cycle)
+                if charge_time > 100:  # 时间异常处理
+                    # 尝试从后续循环获取合理值
+                    for next_idx in range(cycle_idx + 1, min(cycle_idx + 5, len(cycle_data))):
+                        next_charge_time = get_charge_time(cycle_data[next_idx])
+                        if next_charge_time <= 100:
+                            charge_time = next_charge_time
+                            break
+                    else:
+                        charge_time = 0  # 如果都异常，则设为0
+                
+                all_charge_time += charge_time
+        
+        # 3. 计算F59的值
+        charge_and_dis_time = all_charge_time + all_discharge_time
+        return charge_and_dis_time
+    
+    def get_discharge_time(cycle):
+        """获取单个循环的放电时间"""
+        current = np.array(cycle.get('current_in_A', []))
+        time_data = np.array(cycle.get('time_in_s', []))
+        
+        if len(current) > 0 and len(time_data) > 0:
+            discharge_mask = current < 0
+            if np.any(discharge_mask):
+                discharge_indices = np.where(discharge_mask)[0]
+                if len(discharge_indices) > 0:
+                    start_time = time_data[discharge_indices[0]]
+                    end_time = time_data[discharge_indices[-1]]
+                    duration = end_time - start_time  # MATR数据已经是秒，直接使用
+                    return duration
+        return 0
+    
+    def get_charge_time(cycle):
+        """获取单个循环的充电时间"""
+        current = np.array(cycle.get('current_in_A', []))
+        time_data = np.array(cycle.get('time_in_s', []))
+        
+        if len(current) > 0 and len(time_data) > 0:
+            charge_mask = current > 0
+            if np.any(charge_mask):
+                charge_indices = np.where(charge_mask)[0]
+                if len(charge_indices) > 0:
+                    start_time = time_data[charge_indices[0]]
+                    end_time = time_data[charge_indices[-1]]
+                    duration = end_time - start_time  # MATR数据已经是秒，直接使用
+                    return duration
+        return 0
+    
+    f59 = get_c_dc_time()
     
     return [f51, f52, f53, f54, f55, f56, f57, f58, f59]
